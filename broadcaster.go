@@ -3,14 +3,14 @@ Package broadcast provides pubsub of messages over channels.
 
 A provider has a Broadcaster into which it Submits messages and into
 which subscribers Register to pick up those messages.
-
 */
 package broadcast
 
 type broadcaster struct {
-	input chan interface{}
-	reg   chan chan<- interface{}
-	unreg chan chan<- interface{}
+	input  chan interface{}
+	reg    chan chan<- interface{}
+	unreg  chan chan<- interface{}
+	isLive bool
 
 	outputs map[chan<- interface{}]bool
 }
@@ -32,7 +32,14 @@ type Broadcaster interface {
 
 func (b *broadcaster) broadcast(m interface{}) {
 	for ch := range b.outputs {
-		ch <- m
+		if b.isLive {
+			select {
+			case ch <- m:
+			default:
+			}
+		} else {
+			ch <- m // legacy behaviour
+		}
 	}
 }
 
@@ -60,6 +67,24 @@ func NewBroadcaster(buflen int) Broadcaster {
 		input:   make(chan interface{}, buflen),
 		reg:     make(chan chan<- interface{}),
 		unreg:   make(chan chan<- interface{}),
+		isLive:  false,
+		outputs: make(map[chan<- interface{}]bool),
+	}
+
+	go b.run()
+
+	return b
+}
+
+// NewBroadcaster creates a new broadcaster with the given input
+// channel buffer length, that discards submitted items, if there is currently
+// no listener present.
+func NewLiveBroadcaster(buflen int) Broadcaster {
+	b := &broadcaster{
+		input:   make(chan interface{}, buflen),
+		reg:     make(chan chan<- interface{}),
+		unreg:   make(chan chan<- interface{}),
+		isLive:  true,
 		outputs: make(map[chan<- interface{}]bool),
 	}
 
@@ -90,7 +115,7 @@ func (b *broadcaster) Submit(m interface{}) {
 }
 
 // TrySubmit attempts to submit an item to be broadcast, returning
-// true iff it the item was broadcast, else false.
+// true if it the item was broadcast, else false.
 func (b *broadcaster) TrySubmit(m interface{}) bool {
 	if b == nil {
 		return false
